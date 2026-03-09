@@ -1,0 +1,315 @@
+version: '3.8'
+
+services:
+  # Database
+  mongodb:
+    image: mongo:6.0
+    container_name: finswitch-mongodb
+    ports:
+      - "27017:27017"
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: admin
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_PASSWORD:-secureMongoPassword123}
+      MONGO_INITDB_DATABASE: finswitch
+    volumes:
+      - mongodb_data:/data/db
+      - ./infrastructure/mongo-init:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: echo 'db.runCommand("ping").ok' | mongosh localhost:27017/finswitch --quiet
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - finswitch-network
+
+  # Cache
+  redis:
+    image: redis:7-alpine
+    container_name: finswitch-redis
+    ports:
+      - "6379:6379"
+    command: redis-server --requirepass ${REDIS_PASSWORD:-secureRedisPassword123}
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "--raw", "incr", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    networks:
+      - finswitch-network
+
+  # User Service
+  user-service:
+    build:
+      context: .
+      dockerfile: ./services/user-service/Dockerfile
+    container_name: finswitch-user-service
+    ports:
+      - "3006:3006"
+    environment:
+      NODE_ENV: development
+      PORT: 3006
+      MONGO_URL: mongodb://admin:${MONGO_PASSWORD:-secureMongoPassword123}@mongodb:27017/finswitch?authSource=admin
+      JWT_SECRET: ${JWT_SECRET:-your-256-bit-secret-key-change-in-production}
+      JWT_EXPIRES_IN: 8h
+      BCRYPT_SALT_ROUNDS: 10
+      LOG_LEVEL: info
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3006/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - finswitch-network
+    restart: unless-stopped
+
+  # Routing Engine
+  routing-engine:
+    build:
+      context: ./services/routing-engine
+      dockerfile: Dockerfile
+    container_name: finswitch-routing-engine
+    ports:
+      - "3002:3002"
+    environment:
+      NODE_ENV: development
+      PORT: 3002
+      MONGO_URL: mongodb://admin:${MONGO_PASSWORD:-secureMongoPassword123}@mongodb:27017/finswitch?authSource=admin
+      REDIS_URL: redis://:${REDIS_PASSWORD:-secureRedisPassword123}@redis:6379
+      CACHE_TTL: 300
+      LOG_LEVEL: info
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3002/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - finswitch-network
+    restart: unless-stopped
+
+  # Issuer Simulator
+  issuer-simulator:
+    build:
+      context: ./services/issuer-simulator
+      dockerfile: Dockerfile
+    container_name: finswitch-issuer-simulator
+    ports:
+      - "3003:3003"
+    environment:
+      NODE_ENV: development
+      PORT: 3003
+      LOG_LEVEL: info
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3003/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - finswitch-network
+    restart: unless-stopped
+
+  # Payment Service
+  payment-service:
+    build:
+      context: ./services/payment-service
+      dockerfile: Dockerfile
+    container_name: finswitch-payment-service
+    ports:
+      - "3001:3001"
+    environment:
+      NODE_ENV: development
+      PORT: 3001
+      MONGO_URL: mongodb://admin:${MONGO_PASSWORD:-secureMongoPassword123}@mongodb:27017/finswitch?authSource=admin
+      REDIS_URL: redis://:${REDIS_PASSWORD:-secureRedisPassword123}@redis:6379
+      ROUTING_ENGINE_URL: http://routing-engine:3002
+      ISSUER_SIMULATOR_URL: http://issuer-simulator:3003
+      JWT_SECRET: ${JWT_SECRET:-your-256-bit-secret-key-change-in-production}
+      CIRCUIT_BREAKER_THRESHOLD: 5
+      CIRCUIT_BREAKER_TIMEOUT: 30000
+      RETRY_MAX_ATTEMPTS: 3
+      LOG_LEVEL: info
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      user-service:
+        condition: service_healthy
+      routing-engine:
+        condition: service_healthy
+      issuer-simulator:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - finswitch-network
+    restart: unless-stopped
+
+  # Settlement Service
+  settlement-service:
+    build:
+      context: ./services/settlement-service
+      dockerfile: Dockerfile
+    container_name: finswitch-settlement-service
+    ports:
+      - "3004:3004"
+    environment:
+      NODE_ENV: development
+      PORT: 3004
+      MONGO_URL: mongodb://admin:${MONGO_PASSWORD:-secureMongoPassword123}@mongodb:27017/finswitch?authSource=admin
+      LOG_LEVEL: info
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3004/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - finswitch-network
+    restart: unless-stopped
+
+  # Reconciliation Service
+  reconciliation-service:
+    build:
+      context: ./services/reconciliation-service
+      dockerfile: Dockerfile
+    container_name: finswitch-reconciliation-service
+    ports:
+      - "3005:3005"
+    environment:
+      NODE_ENV: development
+      PORT: 3005
+      MONGO_URL: mongodb://admin:${MONGO_PASSWORD:-secureMongoPassword123}@mongodb:27017/finswitch?authSource=admin
+      LOG_LEVEL: info
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3005/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - finswitch-network
+    restart: unless-stopped
+
+  # API Gateway
+  api-gateway:
+    build:
+      context: ./services/api-gateway
+      dockerfile: Dockerfile
+    container_name: finswitch-api-gateway
+    ports:
+      - "3000:3000"
+    environment:
+      NODE_ENV: development
+      PORT: 3000
+      USER_SERVICE_URL: http://user-service:3006
+      PAYMENT_SERVICE_URL: http://payment-service:3001
+      ROUTING_ENGINE_URL: http://routing-engine:3002
+      SETTLEMENT_SERVICE_URL: http://settlement-service:3004
+      RECONCILIATION_SERVICE_URL: http://reconciliation-service:3005
+      JWT_SECRET: ${JWT_SECRET:-your-256-bit-secret-key-change-in-production}
+      LOG_LEVEL: info
+    depends_on:
+      user-service:
+        condition: service_healthy
+      payment-service:
+        condition: service_healthy
+      routing-engine:
+        condition: service_healthy
+      settlement-service:
+        condition: service_healthy
+      reconciliation-service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - finswitch-network
+    restart: unless-stopped
+
+  # Admin Portal Backend
+  portal-backend:
+    build:
+      context: ./portal/backend
+      dockerfile: Dockerfile
+    container_name: finswitch-portal-backend
+    ports:
+      - "4001:4001"
+    environment:
+      NODE_ENV: development
+      PORT: 4001
+      USER_SERVICE_URL: http://user-service:3006
+      PAYMENT_SERVICE_URL: http://payment-service:3001
+      ROUTING_ENGINE_URL: http://routing-engine:3002
+      SETTLEMENT_SERVICE_URL: http://settlement-service:3004
+      RECONCILIATION_SERVICE_URL: http://reconciliation-service:3005
+      JWT_SECRET: ${JWT_SECRET:-your-256-bit-secret-key-change-in-production}
+      CORS_ORIGIN: http://localhost:4000
+      LOG_LEVEL: info
+    depends_on:
+      user-service:
+        condition: service_healthy
+      payment-service:
+        condition: service_healthy
+      routing-engine:
+        condition: service_healthy
+      settlement-service:
+        condition: service_healthy
+      reconciliation-service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:4001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - finswitch-network
+    restart: unless-stopped
+
+  # Admin Portal Frontend
+  portal-frontend:
+    build:
+      context: ./portal/frontend
+      dockerfile: Dockerfile
+    container_name: finswitch-portal-frontend
+    ports:
+      - "4000:4000"
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:4001
+      NODE_ENV: development
+    depends_on:
+      - portal-backend
+    networks:
+      - finswitch-network
+    restart: unless-stopped
+
+networks:
+  finswitch-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
+
+volumes:
+  mongodb_data:
+    driver: local
+  redis_data:
+    driver: local
