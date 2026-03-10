@@ -70,8 +70,8 @@ services:
   # Routing Engine
   routing-engine:
     build:
-      context: ./services/routing-engine
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: ./services/routing-engine/Dockerfile
     container_name: finswitch-routing-engine
     ports:
       - "3002:3002"
@@ -81,6 +81,7 @@ services:
       MONGO_URL: mongodb://admin:${MONGO_PASSWORD:-secureMongoPassword123}@mongodb:27017/finswitch?authSource=admin
       REDIS_URL: redis://:${REDIS_PASSWORD:-secureRedisPassword123}@redis:6379
       CACHE_TTL: 300
+      JWT_SECRET: ${JWT_SECRET:-your-256-bit-secret-key-change-in-production-minimum-32-characters}
       LOG_LEVEL: info
     depends_on:
       mongodb:
