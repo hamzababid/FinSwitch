@@ -8,12 +8,15 @@ The User Service and Routing Engine are fully implemented and ready to run local
 - ✅ Shared utilities library (logger, errors, config, middleware)
 - ✅ User Service with authentication and RBAC
 - ✅ Routing Engine with transaction routing logic
+- ✅ Issuer Simulator with bank authorization simulation
 - ✅ MongoDB models (User, Role, RoutingRule, AuditLog)
 - ✅ Redis caching for routing rules
 - ✅ Authentication endpoints (login, token verification, refresh)
 - ✅ User management endpoints (CRUD operations)
 - ✅ Routing rule management endpoints (CRUD operations)
 - ✅ Routing evaluation endpoint
+- ✅ Authorization simulation with configurable scenarios
+- ✅ ISO 8583 message validation
 - ✅ Audit logging for all user and routing rule actions
 - ✅ Health check and metrics endpoints
 - ✅ Docker configuration
@@ -26,11 +29,11 @@ Before running locally, ensure you have:
 2. **Docker and Docker Compose** installed
 3. **Git** installed
 
-## Quick Start - User Service and Routing Engine
+## Quick Start - User Service, Routing Engine, and Issuer Simulator
 
 ### Option 1: Run with Docker Compose (Recommended)
 
-This will start MongoDB, Redis, User Service, and Routing Engine:
+This will start MongoDB, Redis, User Service, Routing Engine, and Issuer Simulator:
 
 ```bash
 # 1. Build and start the shared library
@@ -54,12 +57,16 @@ docker-compose ps user-service
 # 6. Build and start routing-engine
 docker-compose up -d --build routing-engine
 
-# 7. Check logs
-docker-compose logs -f user-service routing-engine
+# 7. Build and start issuer-simulator
+docker-compose up -d --build issuer-simulator
 
-# 8. Test the services
+# 8. Check logs
+docker-compose logs -f user-service routing-engine issuer-simulator
+
+# 9. Test the services
 curl http://localhost:3006/health
 curl http://localhost:3002/health
+curl http://localhost:3003/health
 ```
 
 ### Option 2: Run Locally (Development)
@@ -94,6 +101,13 @@ cp .env.example .env
 # REDIS_URL=redis://:secureRedisPassword123@localhost:6379
 npm run dev
 # Service will start on http://localhost:3002
+
+# 5. In a new terminal, install and run issuer-simulator
+cd services/issuer-simulator
+npm install
+cp .env.example .env
+npm run dev
+# Service will start on http://localhost:3003
 ```
 
 ## Environment Variables
@@ -627,3 +641,314 @@ All routing rule changes are logged to the `audit_logs` collection:
 - `GET /api/v1/users/:id` - Get user (Admin or self)
 - `PUT /api/v1/users/:id` - Update user (Admin only)
 - `DELETE /api/v1/users/:id` - Deactivate user (Admin only)
+
+
+## Testing the Issuer Simulator
+
+### 1. Health Check
+
+```bash
+curl http://localhost:3003/health
+```
+
+Expected response:
+```json
+{
+  "status": "healthy",
+  "service": "issuer-simulator",
+  "timestamp": "2024-01-01T00:00:00.000Z",
+  "uptime": 120,
+  "version": "1.0.0",
+  "environment": "development"
+}
+```
+
+### 2. Metrics
+
+```bash
+curl http://localhost:3003/metrics
+```
+
+Expected response:
+```json
+{
+  "service": "issuer-simulator",
+  "timestamp": "2024-01-01T00:00:00.000Z",
+  "metrics": {
+    "authorization": {
+      "total": 100,
+      "approved": 95,
+      "declined": 4,
+      "errors": 1,
+      "approvalRate": "95.00%",
+      "declineRate": "4.00%",
+      "errorRate": "1.00%",
+      "averageProcessingTimeMs": 75.5
+    },
+    "system": {
+      "uptime": 3600,
+      "memoryUsage": {...},
+      "cpuUsage": {...}
+    }
+  }
+}
+```
+
+### 3. Get Configured Scenarios
+
+```bash
+curl http://localhost:3003/api/v1/issuer/scenarios
+```
+
+Expected response:
+```json
+{
+  "scenarios": [
+    {
+      "id": "decline-insufficient-funds",
+      "name": "Decline - Insufficient Funds",
+      "description": "Cards ending in 0001 are declined due to insufficient funds",
+      "priority": 100,
+      "enabled": true,
+      "trigger": {
+        "type": "card_pattern",
+        "pattern": ".*0001$"
+      },
+      "response": {
+        "responseCode": "51",
+        "responseMessage": "Insufficient funds"
+      }
+    }
+  ],
+  "count": 5
+}
+```
+
+### 4. Test Authorization - Approved Transaction
+
+```bash
+curl -X POST http://localhost:3003/api/v1/issuer/authorize \
+  -H "Content-Type: application/json" \
+  -d '{
+    "cardNumber": "4111111111111111",
+    "processingCode": "000000",
+    "amount": 100.50,
+    "transmissionDateTime": "2024-01-01T12:00:00Z",
+    "stan": "123456",
+    "localTime": "120000",
+    "localDate": "0101",
+    "expirationDate": "2512",
+    "merchantType": "5411",
+    "posEntryMode": "051",
+    "acquiringInstitutionId": "123456",
+    "retrievalReferenceNumber": "000000123456",
+    "terminalId": "TERM001",
+    "merchantId": "MERCHANT001",
+    "currency": "840"
+  }'
+```
+
+Expected response:
+```json
+{
+  "responseCode": "00",
+  "responseMessage": "Approved",
+  "authorizationCode": "ABC123",
+  "stan": "123456",
+  "retrievalReferenceNumber": "000000123456",
+  "transmissionDateTime": "2024-01-01T12:00:05Z",
+  "correlationId": "..."
+}
+```
+
+### 5. Test Authorization - Insufficient Funds (card ending in 0001)
+
+```bash
+curl -X POST http://localhost:3003/api/v1/issuer/authorize \
+  -H "Content-Type: application/json" \
+  -d '{
+    "cardNumber": "4111111111110001",
+    "processingCode": "000000",
+    "amount": 100.50,
+    "transmissionDateTime": "2024-01-01T12:00:00Z",
+    "stan": "123457",
+    "localTime": "120000",
+    "localDate": "0101",
+    "expirationDate": "2512",
+    "merchantType": "5411",
+    "posEntryMode": "051",
+    "acquiringInstitutionId": "123456",
+    "retrievalReferenceNumber": "000000123457",
+    "terminalId": "TERM001",
+    "merchantId": "MERCHANT001",
+    "currency": "840"
+  }'
+```
+
+Expected response:
+```json
+{
+  "responseCode": "51",
+  "responseMessage": "Insufficient funds",
+  "stan": "123457",
+  "retrievalReferenceNumber": "000000123457",
+  "transmissionDateTime": "2024-01-01T12:00:05Z",
+  "correlationId": "..."
+}
+```
+
+### 6. Test Authorization - Invalid Card (card ending in 0002)
+
+```bash
+curl -X POST http://localhost:3003/api/v1/issuer/authorize \
+  -H "Content-Type: application/json" \
+  -d '{
+    "cardNumber": "4111111111110002",
+    "processingCode": "000000",
+    "amount": 50.00,
+    "transmissionDateTime": "2024-01-01T12:00:00Z",
+    "stan": "123458",
+    "localTime": "120000",
+    "localDate": "0101",
+    "expirationDate": "2512",
+    "merchantType": "5411",
+    "posEntryMode": "051",
+    "acquiringInstitutionId": "123456",
+    "retrievalReferenceNumber": "000000123458",
+    "terminalId": "TERM001",
+    "merchantId": "MERCHANT001",
+    "currency": "840"
+  }'
+```
+
+Expected response:
+```json
+{
+  "responseCode": "14",
+  "responseMessage": "Invalid card number",
+  "stan": "123458",
+  "retrievalReferenceNumber": "000000123458",
+  "transmissionDateTime": "2024-01-01T12:00:05Z",
+  "correlationId": "..."
+}
+```
+
+### 7. Test Authorization - High Amount Decline (amount > 10000)
+
+```bash
+curl -X POST http://localhost:3003/api/v1/issuer/authorize \
+  -H "Content-Type: application/json" \
+  -d '{
+    "cardNumber": "4111111111111111",
+    "processingCode": "000000",
+    "amount": 15000.00,
+    "transmissionDateTime": "2024-01-01T12:00:00Z",
+    "stan": "123459",
+    "localTime": "120000",
+    "localDate": "0101",
+    "expirationDate": "2512",
+    "merchantType": "5411",
+    "posEntryMode": "051",
+    "acquiringInstitutionId": "123456",
+    "retrievalReferenceNumber": "000000123459",
+    "terminalId": "TERM001",
+    "merchantId": "MERCHANT001",
+    "currency": "840"
+  }'
+```
+
+Expected response:
+```json
+{
+  "responseCode": "61",
+  "responseMessage": "Exceeds withdrawal amount limit",
+  "stan": "123459",
+  "retrievalReferenceNumber": "000000123459",
+  "transmissionDateTime": "2024-01-01T12:00:05Z",
+  "correlationId": "..."
+}
+```
+
+### 8. Test Authorization - Invalid ISO 8583 Message
+
+```bash
+curl -X POST http://localhost:3003/api/v1/issuer/authorize \
+  -H "Content-Type: application/json" \
+  -d '{
+    "cardNumber": "4111111111111111",
+    "amount": 100.50
+  }'
+```
+
+Expected response:
+```json
+{
+  "error": "VALIDATION_ERROR",
+  "message": "Invalid ISO 8583 message format",
+  "errors": [
+    {
+      "field": "processingCode",
+      "message": "Required field 'processingCode' is missing",
+      "code": "30"
+    }
+  ],
+  "responseCode": "30",
+  "timestamp": "2024-01-01T12:00:05Z",
+  "correlationId": "..."
+}
+```
+
+## Issuer Simulator Features
+
+### Simulation Scenarios
+
+The issuer simulator comes with pre-configured scenarios for testing:
+
+1. **Default Approval**: All normal transactions are approved (response code 00)
+2. **Insufficient Funds**: Cards ending in 0001 are declined (response code 51)
+3. **Invalid Card**: Cards ending in 0002 are declined (response code 14)
+4. **Timeout Simulation**: Cards ending in 0003 simulate timeout (response code 91, 5-second delay)
+5. **High Amount Decline**: Transactions over $10,000 are declined (response code 61)
+
+### ISO 8583 Message Validation
+
+The simulator validates all required ISO 8583 fields:
+- Card number (PAN) with Luhn check
+- Processing code (6 digits)
+- Amount (positive number)
+- STAN (6 digits)
+- Expiration date (YYMM format)
+- Currency code (3-digit ISO 4217)
+- Merchant type (4 digits)
+- POS entry mode (3 digits)
+
+### Authorization Code Generation
+
+- Approved transactions receive a 6-character alphanumeric authorization code
+- Format: `[A-Z0-9]{6}` (e.g., "ABC123", "XYZ789")
+
+### Processing Delay
+
+- Realistic processing delay between 50-100ms for normal transactions
+- Configurable delay for timeout scenarios (default 5 seconds)
+
+### Response Codes
+
+The simulator supports all standard ISO 8583 response codes:
+- `00` - Approved
+- `05` - Do not honor
+- `14` - Invalid card number
+- `30` - Format error
+- `51` - Insufficient funds
+- `54` - Expired card
+- `61` - Exceeds withdrawal amount limit
+- `91` - Issuer or switch inoperative
+- `96` - System malfunction
+
+### Issuer Simulator Endpoints
+
+#### Public Endpoints (No Authentication)
+- `GET /health` - Health check
+- `GET /metrics` - Service metrics with authorization statistics
+- `POST /api/v1/issuer/authorize` - Process authorization request
+- `GET /api/v1/issuer/scenarios` - Get configured simulation scenarios

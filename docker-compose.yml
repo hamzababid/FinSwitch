@@ -100,14 +100,17 @@ services:
   # Issuer Simulator
   issuer-simulator:
     build:
-      context: ./services/issuer-simulator
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: ./services/issuer-simulator/Dockerfile
     container_name: finswitch-issuer-simulator
     ports:
       - "3003:3003"
     environment:
       NODE_ENV: development
       PORT: 3003
+      JWT_SECRET: ${JWT_SECRET:-your-256-bit-secret-key-change-in-production-minimum-32-characters}
+      DEFAULT_PROCESSING_DELAY_MS: 75
+      APPROVAL_RATE_PERCENTAGE: 95
       LOG_LEVEL: info
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3003/health"]
